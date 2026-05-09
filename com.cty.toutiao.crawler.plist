@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- 任务唯一标识（遵循 com.公司.项目.任务 的命名规范） -->
+    <key>Label</key>
+    <string>com.cty.toutiao.crawler</string>
+
+    <!-- 要执行的脚本 -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/cty/Documents/pythonStuty/browser-use/run_crawler.sh</string>
+    </array>
+
+    <!-- 触发时间：每天 9:00 和 21:00 各跑一次 -->
+    <!-- 想改时间？增减 dict，例如只跑一次就保留一条 -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>9</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>21</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <!-- 关键：电脑如果在触发时正在休眠，唤醒后会自动补跑（cron 没有这个能力） -->
+    <key>StartCalendarIntervalCatchUp</key>
+    <true/>
+
+    <!-- 只执行一次，不守护进程 -->
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- 工作目录 -->
+    <key>WorkingDirectory</key>
+    <string>/Users/cty/Documents/pythonStuty/browser-use</string>
+
+    <!-- launchd 自己的标准输出/错误日志（和脚本内部日志分开，用于排查 launchd 本身的问题） -->
+    <key>StandardOutPath</key>
+    <string>/Users/cty/Documents/pythonStuty/browser-use/output_toutiao/logs/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/cty/Documents/pythonStuty/browser-use/output_toutiao/logs/launchd.err.log</string>
+
+    <!-- 基础 PATH（Playwright 需要能找到 Chrome；脚本内部也会再 export 一次 PATH 保底） -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
+    </dict>
+</dict>
+</plist>
