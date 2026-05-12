@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).parent
-PORT = int(os.environ.get("PORT", 8000))
+PORT = int(os.environ.get("PORT", 8082))
 
 # ---------- 同步状态 ----------
 sync_state = {
