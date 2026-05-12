@@ -442,7 +442,7 @@ async function triggerSync() {
   status.textContent = '';
 
   try {
-    const resp = await fetch('/api/sync', { method: 'POST' });
+    const resp = await fetch('api/sync', { method: 'POST' });
     const data = await resp.json();
     if (!data.ok) {
       showToast(data.message, 'error');
@@ -462,7 +462,7 @@ async function triggerSync() {
 
 async function checkSyncStatus() {
   try {
-    const resp = await fetch('/api/sync/status');
+    const resp = await fetch('api/sync/status');
     const data = await resp.json();
     const btn = document.getElementById('sync-btn');
     const status = document.getElementById('sync-status');
@@ -495,7 +495,7 @@ async function checkSyncStatus() {
 // 页面加载时检查是否有正在进行的同步
 (async function checkInitialSync() {
   try {
-    const resp = await fetch('/api/sync/status');
+    const resp = await fetch('api/sync/status');
     const data = await resp.json();
     if (data.running) {
       const btn = document.getElementById('sync-btn');
