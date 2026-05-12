@@ -1,5 +1,3 @@
-browser-use
-langchain-google-genai
 python-dotenv
 playwright
 psycopg2-binary
