@@ -21,6 +21,39 @@
     align-items: center;
     gap: 8px;
   }
+  .sync-btn {
+    margin-left: auto;
+    border: none;
+    background: #2563eb;
+    color: #fff;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  .sync-btn:hover:not(:disabled) { background: #1d4ed8; }
+  .sync-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .sync-btn .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .sync-status {
+    font-size: 12px;
+    color: #6b7280;
+    margin-top: 4px;
+  }
+  .sync-status.success { color: #10b981; }
+  .sync-status.error { color: #ef4444; }
   header .sub { color: #6b7280; font-size: 13px; }
 
   .stat-bar {
@@ -164,13 +197,50 @@
   .empty { font-size: 14px; }
 
   mark { background: #fef08a; padding: 0 2px; border-radius: 2px; }
+
+  /* Toast 消息提示 */
+  .toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .toast {
+    padding: 14px 20px;
+    border-radius: 10px;
+    font-size: 14px;
+    color: #fff;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+    animation: toast-in 0.3s ease, toast-out 0.3s ease forwards;
+    animation-delay: 0s, 4s;
+    max-width: 360px;
+  }
+  .toast.success { background: #10b981; }
+  .toast.error { background: #ef4444; }
+  .toast.info { background: #2563eb; }
+  @keyframes toast-in {
+    from { opacity: 0; transform: translateX(40px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+  @keyframes toast-out {
+    from { opacity: 1; transform: translateX(0); }
+    to { opacity: 0; transform: translateX(40px); }
+  }
 </style>
 </head>
 <body>
 <div class="container">
+  <div class="toast-container" id="toast-container"></div>
   <header>
-    <h1>📰 头条文章浏览器</h1>
+    <h1>
+      📰 头条文章浏览器
+      <button class="sync-btn" id="sync-btn" onclick="triggerSync()">🔄 同步抓取</button>
+    </h1>
     <div class="sub">读取本地 <code>output_toutiao/articles.json</code></div>
+    <div class="sync-status" id="sync-status"></div>
   </header>
 
   <div class="stat-bar" id="stat-bar"></div>
@@ -349,6 +419,94 @@ document.getElementById('type-filter').addEventListener('change', applyFilter);
 document.getElementById('sort').addEventListener('change', applyFilter);
 
 loadData();
+
+// ---------- 同步功能 ----------
+let syncPolling = null;
+
+function showToast(message, type = 'info') {
+  const container = document.getElementById('toast-container');
+  const toast = document.createElement('div');
+  toast.className = 'toast ' + type;
+  toast.textContent = message;
+  container.appendChild(toast);
+  // 动画结束后移除
+  setTimeout(() => toast.remove(), 4500);
+}
+
+async function triggerSync() {
+  const btn = document.getElementById('sync-btn');
+  const status = document.getElementById('sync-status');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> 同步中...';
+  status.className = 'sync-status';
+  status.textContent = '';
+
+  try {
+    const resp = await fetch('/api/sync', { method: 'POST' });
+    const data = await resp.json();
+    if (!data.ok) {
+      showToast(data.message, 'error');
+      btn.disabled = false;
+      btn.innerHTML = '🔄 同步抓取';
+      return;
+    }
+    status.textContent = '⏳ 同步已启动，正在后台抓取...';
+    // 轮询状态
+    syncPolling = setInterval(checkSyncStatus, 3000);
+  } catch (e) {
+    showToast('请求失败：' + e.message + '（请确认使用 view.sh 启动服务）', 'error');
+    btn.disabled = false;
+    btn.innerHTML = '🔄 同步抓取';
+  }
+}
+
+async function checkSyncStatus() {
+  try {
+    const resp = await fetch('/api/sync/status');
+    const data = await resp.json();
+    const btn = document.getElementById('sync-btn');
+    const status = document.getElementById('sync-status');
+
+    if (!data.running) {
+      clearInterval(syncPolling);
+      syncPolling = null;
+      btn.disabled = false;
+      btn.innerHTML = '🔄 同步抓取';
+      status.textContent = '';
+
+      if (data.last_exit_code === 0) {
+        const newCount = data.new_count || 0;
+        if (newCount > 0) {
+          showToast(`✅ 同步完成，新增 ${newCount} 篇文章`, 'success');
+        } else {
+          showToast('✅ 同步完成，暂无新文章', 'info');
+        }
+        // 重新加载数据
+        loadData();
+      } else {
+        showToast('❌ 同步失败：' + (data.error || '未知错误'), 'error');
+      }
+    }
+  } catch (e) {
+    // 网络错误时不中断轮询
+  }
+}
+
+// 页面加载时检查是否有正在进行的同步
+(async function checkInitialSync() {
+  try {
+    const resp = await fetch('/api/sync/status');
+    const data = await resp.json();
+    if (data.running) {
+      const btn = document.getElementById('sync-btn');
+      const status = document.getElementById('sync-status');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> 同步中...';
+      status.textContent = '⏳ 同步进行中（' + data.last_start + ' 启动）...';
+      syncPolling = setInterval(checkSyncStatus, 3000);
+    }
+  } catch (e) { /* 静态服务模式，忽略 */ }
+})();
 </script>
 </body>
 </html>

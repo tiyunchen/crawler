@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+
+# 环境变量（含数据库密码、API Key）
+.env
+
+# 抓取产出（大量 JSON/Markdown，不适合入库）
+output_toutiao/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
+
+# macOS launchd 配置（含本机路径，服务器上用 systemd）
+com.cty.toutiao.crawler.plist
+
+# 日志
+*.log

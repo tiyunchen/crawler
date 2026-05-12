@@ -18,6 +18,7 @@
 import asyncio
 import json
 import os
+import platform
 import re
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +52,9 @@ INCREMENTAL_STABLE_LIMIT = 3     # 增量模式下连续 N 次无新增就停（
 
 # 无头模式：默认有头（手动调试）；定时任务设 HEADLESS=1 即可隐藏浏览器窗口
 HEADLESS = os.getenv("HEADLESS", "0").lower() in ("1", "true", "yes")
+
+# macOS 复用系统 Chrome，其他平台用 Playwright 自带 Chromium
+CHROME_CHANNEL = "chrome" if platform.system() == "Darwin" else None
 
 # User-Agent：伪装成普通 Chrome
 UA = (
@@ -229,8 +233,7 @@ async def collect_article_list(user_url: str, known_ids: set[str] | None = None)
     pre_known_count = len(seen)
 
     async with async_playwright() as p:
-        # 复用系统 Chrome（channel="chrome"），免去下载 Chromium
-        browser = await p.chromium.launch(channel="chrome", headless=HEADLESS)
+        browser = await p.chromium.launch(channel=CHROME_CHANNEL, headless=HEADLESS)
         context = await browser.new_context(user_agent=UA, locale="zh-CN")
         page = await context.new_page()
 
@@ -350,7 +353,7 @@ async def fetch_all_contents(articles: list[dict]) -> None:
         print(f"🔄 检测到历史数据，已完成 {len(existing)} 条将跳过")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(channel="chrome", headless=True)
+        browser = await p.chromium.launch(channel=CHROME_CHANNEL, headless=True)
         context = await browser.new_context(user_agent=UA, locale="zh-CN")
         page = await context.new_page()
 
