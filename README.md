@@ -77,9 +77,12 @@ DATABASE_URL=postgresql://postgres:3357@47.98.191.92:5432/postgres
 
 # 可选：自定义表名，默认 toutiao_articles
 # DB_TABLE=toutiao_articles
+
+# 可选：覆盖默认博主列表，多个 URL 用英文逗号分隔
+# TOUTIAO_USER_URLS=https://www.toutiao.com/c/user/token/xxx/,https://www.toutiao.com/c/user/token/yyy/
 ```
 
-> **要换博主**？直接改 `toutiao_crawler.py` 顶部的 `USER_URL`。`user_token` 字段会自动区分，同一张表可存多博主。
+> **要加博主**？默认已内置两个博主；后续可改 `toutiao_crawler.py` 顶部的 `DEFAULT_USER_URLS`，或用环境变量 `TOUTIAO_USER_URLS` 覆盖。脚本会从博主主页识别 `user_name` 用于页面展示，并用 `user_token` 稳定区分同一张表里的多博主。
 
 ---
 
@@ -225,7 +228,8 @@ SELECT raw->>'digg_count' FROM toutiao_articles WHERE group_id='xxxx';
 
 | 配置 | 默认值 | 说明 |
 |------|--------|------|
-| `USER_URL` | 远峰战略2025 | 目标博主主页 URL |
+| `DEFAULT_USER_URLS` | 2 个博主 URL | 默认抓取的博主主页列表 |
+| `TOUTIAO_USER_URLS` (env) | 空 | 覆盖默认博主列表，多个 URL 用逗号/分号/换行分隔 |
 | `MAX_ITEMS` | 500 | 列表最大条数，`0`=不限 |
 | `MAX_SCROLL_ROUNDS` | 300 | 最大滚动次数保底 |
 | `SCROLL_INTERVAL` | 2.5s | 滚动间隔（控制频率） |
@@ -253,8 +257,8 @@ launchd 配置了 `StartCalendarIntervalCatchUp=true`，唤醒后会自动补跑
 **Q3：被风控了怎么办？**
 调大 `SCROLL_INTERVAL` 和 `ARTICLE_INTERVAL`，减少 `MAX_ITEMS`。增量模式一般很安全（只拉几条就停）。
 
-**Q4：想换个博主？**
-改 `toutiao_crawler.py` 顶部的 `USER_URL`。历史数据仍会保留（`user_token` 字段自动区分）。
+**Q4：想加/换博主？**
+改 `toutiao_crawler.py` 顶部的 `DEFAULT_USER_URLS`，或设置环境变量 `TOUTIAO_USER_URLS`。历史数据仍会保留；新版脚本会优先展示识别到的博主名，并用 `user_token` 字段稳定区分。
 
 **Q5：想重新全量抓？**
 ```bash
@@ -283,7 +287,7 @@ save_outputs(data)
 
 ## 📖 查看抓取结果（本地静态页面）
 
-提供一个单文件 HTML 阅读器，直接读 `articles.json`，支持搜索 / 筛选 / 分页 / 展开全文。
+提供一个单文件 HTML 阅读器，直接读 `articles.json`，支持搜索 / 博主筛选 / 类型筛选 / 分页 / 展开全文。
 
 ```bash
 # 一键启动（会自动打开浏览器）
@@ -296,6 +300,7 @@ Python3 -m http.server 8000
 
 **功能**：
 - 🔍 实时搜索（标题 + 正文 + 摘要，匹配词黄色高亮）
+- 👤 按博主名称筛选（名称识别失败时显示短 token）
 - 🏷️ 按类型筛选（文章 / 微头条 / 视频）
 - 📅 按时间 / 评论数排序
 - 📄 20 条/页分页

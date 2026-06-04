@@ -23,14 +23,24 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit, urlunsplit
 
+from dotenv import load_dotenv
 from playwright.async_api import async_playwright, Page, Response
 
+load_dotenv()
+
 # ---------------- 配置 ----------------
-USER_URL = (
-    "https://www.toutiao.com/c/user/token/"
-    "MS4wLjABAAAALa_PgXCdXqpsShJ5Bq2Ni4E2-hfmmRq_gkQpzwFxjLSOyqV09KOYsUxECzE9XiRr/"
-)
+DEFAULT_USER_URLS = [
+    (
+        "https://www.toutiao.com/c/user/token/"
+        "MS4wLjABAAAALa_PgXCdXqpsShJ5Bq2Ni4E2-hfmmRq_gkQpzwFxjLSOyqV09KOYsUxECzE9XiRr/"
+    ),
+    (
+        "https://www.toutiao.com/c/user/token/"
+        "CiyOuniN4Sex-9o3I4U6kSU8GDrUkChVtoVOtnMMQ5cus5FWJot1gKb8mOnN9xpJCjwAAAAAAAAAAAAAUIDGcJLwMYCL1BOF5j4xT-GGDiY7rp_VD2JxD80QGaVAEMDNPPjAcVOoc5me_R68w10QhaCTDhjDxYPqBCIBA7i4GXs=/"
+    ),
+]
 
 OUTPUT_DIR = Path(__file__).parent / "output_toutiao"
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -88,6 +98,52 @@ TYPE_CN = {
 }
 
 
+def _normalize_user_url(url: str) -> str:
+    """去掉头条分享链接里的追踪参数，保留稳定的博主主页地址。"""
+    parts = urlsplit((url or "").strip())
+    if not parts.scheme or not parts.netloc:
+        return (url or "").strip()
+    path = parts.path if parts.path.endswith("/") else parts.path + "/"
+    return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+
+def _extract_user_token(url: str) -> str:
+    """从博主主页 URL 提取 user_token，用于多博主增量和页面筛选。"""
+    m = re.search(r"/token/([^/?#]+)", url or "")
+    return unquote(m.group(1)) if m else ""
+
+
+def _short_user_token(user_token: str) -> str:
+    """日志和兜底展示用短 token，避免长 token 影响可读性。"""
+    return user_token[:8] + "..." + user_token[-6:] if len(user_token) > 18 else user_token
+
+
+def _load_user_urls() -> list[str]:
+    """支持环境变量覆盖，方便后续新增博主时不必再改代码。"""
+    raw = (
+        os.getenv("TOUTIAO_USER_URLS")
+        or os.getenv("USER_URLS")
+        or os.getenv("USER_URL")
+        or ""
+    )
+    candidates = re.split(r"[\n,;]+", raw) if raw.strip() else DEFAULT_USER_URLS
+    urls: list[str] = []
+    seen_tokens: set[str] = set()
+    for item in candidates:
+        url = _normalize_user_url(item)
+        token = _extract_user_token(url)
+        if not url or (token and token in seen_tokens):
+            continue
+        if token:
+            seen_tokens.add(token)
+        urls.append(url)
+    return urls
+
+
+USER_URLS = _load_user_urls()
+USER_NAME_BY_TOKEN: dict[str, str] = {}
+
+
 def _is_list_api(url: str) -> bool:
     return any(p in url for p in LIST_API_PATTERNS)
 
@@ -102,6 +158,57 @@ def _ts_to_str(ts: Any) -> str:
 def _safe_filename(name: str) -> str:
     name = re.sub(r'[\\/:*?"<>|\r\n\t]+', "_", name or "").strip()
     return name[:80] or "untitled"
+
+
+def _clean_user_name(text: str) -> str:
+    """清理页面标题/DOM 中提取到的博主名称。"""
+    name = re.sub(r"[\r\n\t]+", " ", text or "").strip()
+    name = re.sub(r"\s+", " ", name)
+    name = re.sub(r"(的个人主页.*|[-_ ]*今日头条.*)$", "", name).strip()
+    if not name or len(name) > 40:
+        return ""
+    banned = ("今日头条", "登录", "关注", "粉丝", "获赞", "作品", "全部")
+    return "" if any(word == name or word in name and len(name) <= len(word) + 2 for word in banned) else name
+
+
+async def _extract_user_name(page: Page) -> str:
+    """从博主主页提取展示名称，失败时返回空字符串走 token 兜底。"""
+    data = await page.evaluate(
+        """() => {
+            const visibleText = (el) => {
+                if (!el) return '';
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0 || rect.height === 0) {
+                    return '';
+                }
+                return (el.innerText || el.textContent || '').trim();
+            };
+            const selectors = [
+                'h1',
+                'h2',
+                '[class*="user" i][class*="name" i]',
+                '[class*="author" i][class*="name" i]',
+                '[class*="name" i]',
+                '[class*="title" i]'
+            ];
+            const candidates = [document.title || ''];
+            for (const selector of selectors) {
+                for (const el of document.querySelectorAll(selector)) {
+                    const text = visibleText(el);
+                    if (text) candidates.push(text);
+                }
+            }
+            return candidates;
+        }"""
+    )
+    if not isinstance(data, list):
+        return ""
+    for item in data:
+        name = _clean_user_name(str(item))
+        if name:
+            return name
+    return ""
 
 
 # ---------------- 中间状态落盘 ----------------
@@ -188,7 +295,7 @@ def _infer_type_and_url(item: dict, gid: str) -> tuple[str, str]:
     return t, raw_url
 
 
-def _collect_item(item: dict, articles: list, seen: set) -> None:
+def _collect_item(item: dict, articles: list, seen: set, user_url: str, user_token: str, user_name: str) -> None:
     """解析单条 item 并追加到 articles，幂等"""
     if not isinstance(item, dict):
         return
@@ -209,6 +316,9 @@ def _collect_item(item: dict, articles: list, seen: set) -> None:
 
     articles.append({
         "group_id": gid,
+        "user_token": user_token,
+        "user_name": user_name,
+        "user_url": user_url,
         "type": item_type,
         "type_cn": TYPE_CN.get(item_type, "未知"),
         "title": title,
@@ -228,6 +338,8 @@ def _collect_item(item: dict, articles: list, seen: set) -> None:
 async def collect_article_list(user_url: str, known_ids: set[str] | None = None) -> list[dict]:
     """拉取博主列表。known_ids 中的条目会被跳过（用于增量模式）"""
     articles: list[dict] = []
+    user_token = _extract_user_token(user_url)
+    user_name = ""
     # seen 预填旧 ID，_collect_item 会自动跳过
     seen: set[str] = set(known_ids or set())
     pre_known_count = len(seen)
@@ -238,6 +350,7 @@ async def collect_article_list(user_url: str, known_ids: set[str] | None = None)
         page = await context.new_page()
 
         async def on_response(resp: Response):
+            nonlocal user_name
             if not _is_list_api(resp.url):
                 return
             try:
@@ -249,7 +362,7 @@ async def collect_article_list(user_url: str, known_ids: set[str] | None = None)
                 return
             for item in items:
                 try:
-                    _collect_item(item, articles, seen)
+                    _collect_item(item, articles, seen, user_url, user_token, user_name)
                 except Exception as e:
                     print(f"   ⚠️ item 解析失败：{e}")
 
@@ -260,6 +373,15 @@ async def collect_article_list(user_url: str, known_ids: set[str] | None = None)
             print(f"🔄 增量模式：已知 {pre_known_count} 条历史内容，将自动跳过")
         await page.goto(user_url, wait_until="domcontentloaded", timeout=60000)
         await asyncio.sleep(3)
+        user_name = await _extract_user_name(page)
+        if user_name:
+            USER_NAME_BY_TOKEN[user_token] = user_name
+            for art in articles:
+                if not art.get("user_name"):
+                    art["user_name"] = user_name
+            print(f"👤 识别博主：{user_name}")
+        else:
+            print(f"👤 未识别到博主名，使用 token：{_short_user_token(user_token)}")
         # 默认就在“全部” tab，不再切换
 
         # 下拉加载：增量模式下更早停（正常新发布数量很少）
@@ -435,7 +557,8 @@ def save_outputs(articles: list[dict], db_subset: list[dict] | None = None) -> N
     try:
         from db import save_to_db
         # db_subset 为 None 时写全部（首次迁移或全量重跑）；否则只写新增/更新的子集
-        save_to_db(db_subset if db_subset is not None else articles, user_url=USER_URL)
+        fallback_user_url = USER_URLS[0] if USER_URLS else ""
+        save_to_db(db_subset if db_subset is not None else articles, user_url=fallback_user_url)
     except Exception as e:
         print(f"  ⚠️ 数据库模块加载失败：{e}")
 
@@ -506,23 +629,71 @@ def _merge_articles(new_list: list[dict], old_list: list[dict]) -> list[dict]:
     return sorted(merged.values(), key=lambda x: x.get("publish_time", ""), reverse=True)
 
 
+def _fill_legacy_user_info(articles: list[dict], default_user_url: str) -> bool:
+    """历史 JSON 没有 user_token，默认归到第一个博主，保证页面筛选能立即生效。"""
+    default_user_token = _extract_user_token(default_user_url)
+    changed = False
+    for art in articles:
+        if not isinstance(art, dict) or not art.get("group_id"):
+            continue
+        if not art.get("user_token"):
+            art["user_token"] = default_user_token
+            changed = True
+        if not art.get("user_url"):
+            art["user_url"] = default_user_url
+            changed = True
+    return changed
+
+
+def _fill_user_name_for_token(articles: list[dict], user_token: str, user_name: str) -> bool:
+    """博主主页识别到名称后，同步补齐历史 JSON 的可读来源名称。"""
+    if not user_token or not user_name:
+        return False
+    changed = False
+    for art in articles:
+        if not isinstance(art, dict) or art.get("user_token") != user_token:
+            continue
+        if art.get("user_name") != user_name:
+            art["user_name"] = user_name
+            changed = True
+    return changed
+
+
 async def main():
     print("=" * 60)
-    print("今日头条博主全部内容抓取（文章 + 微头条 + 视频）")
+    print("今日头条多博主全部内容抓取（文章 + 微头条 + 视频）")
     print("=" * 60)
+    print(f"👥 本次配置博主数：{len(USER_URLS)}")
 
     # 1. 加载历史数据
     old_articles = _load_previous_articles() if INCREMENTAL else []
+    legacy_changed = _fill_legacy_user_info(old_articles, USER_URLS[0]) if old_articles and USER_URLS else False
     known_ids = {a["group_id"] for a in old_articles if a.get("group_id")}
     if INCREMENTAL and known_ids:
         print(f"📂 加载历史数据：{len(known_ids)} 条（增量模式）")
     else:
         print("🆕 首次拉取或全量模式")
 
-    # 2. 拉取新增列表
-    new_articles = await collect_article_list(USER_URL, known_ids=known_ids)
+    # 2. 逐个博主拉取新增列表，known_ids 会持续更新，避免同一次任务重复抓同一 group_id
+    new_articles: list[dict] = []
+    for idx, user_url in enumerate(USER_URLS, 1):
+        user_token = _extract_user_token(user_url)
+        token_label = _short_user_token(user_token)
+        print(f"\n👤 [{idx}/{len(USER_URLS)}] 开始抓取博主：{token_label}")
+        user_new_articles = await collect_article_list(user_url, known_ids=known_ids)
+        legacy_changed = _fill_user_name_for_token(
+            old_articles, user_token, USER_NAME_BY_TOKEN.get(user_token, "")
+        ) or legacy_changed
+        if user_new_articles:
+            known_ids.update(a["group_id"] for a in user_new_articles if a.get("group_id"))
+            new_articles.extend(user_new_articles)
+            print(f"  ✅ 该博主新增 {len(user_new_articles)} 条")
+        else:
+            print("  ✅ 该博主暂无新增")
 
     if not new_articles:
+        if legacy_changed:
+            _save_full_snapshot(old_articles)
         if known_ids:
             print("\n✅ 本次跳脚本无新增内容，任务结束\n")
         else:

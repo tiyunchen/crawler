@@ -247,6 +247,9 @@
 
   <div class="toolbar">
     <input class="search" id="q" placeholder="🔍 搜索标题或正文..." />
+    <select id="user-filter">
+      <option value="">全部博主</option>
+    </select>
     <select id="type-filter">
       <option value="">全部类型</option>
       <option value="文章">文章</option>
@@ -278,15 +281,50 @@ async function loadData() {
     const resp = await fetch('output_toutiao/articles.json?t=' + Date.now());
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     ALL = await resp.json();
+    renderUserFilter();
     renderStat();
     applyFilter();
   } catch (e) {
     document.getElementById('list').innerHTML =
       '<div class="empty">❌ 加载失败：' + e.message +
-      '<br><br>请先启动本地 HTTP 服务：<br><code>cd ' +
-      '/Users/cty/Documents/pythonStuty/browser-use && python -m http.server 8000</code>' +
-      '<br>然后访问 <a href="http://localhost:8000/viewer.html">http://localhost:8000/viewer.html</a></div>';
+      '<br><br>请先启动查看服务：<br><code>PORT=8082 .venv/bin/python server.py</code>' +
+      '<br>然后访问 <code>http://服务器IP:8082/viewer.html</code></div>';
   }
+}
+
+function getUserKey(a) {
+  return a.user_token || 'legacy';
+}
+
+function shortUserToken(token) {
+  if (token.length <= 18) return token;
+  return token.slice(0, 8) + '...' + token.slice(-6);
+}
+
+function formatUserLabel(a) {
+  const name = (a.user_name || '').trim();
+  if (name) return name;
+  const token = a.user_token || '';
+  return token ? shortUserToken(token) : '历史博主';
+}
+
+function renderUserFilter() {
+  const select = document.getElementById('user-filter');
+  const current = select.value;
+  const users = new Map();
+  ALL.forEach(a => {
+    const key = getUserKey(a);
+    if (!users.has(key)) users.set(key, { label: formatUserLabel(a), token: a.user_token || '' });
+  });
+  const labelCounts = {};
+  users.forEach(({ label }) => { labelCounts[label] = (labelCounts[label] || 0) + 1; });
+  select.innerHTML = '<option value="">全部博主</option>' +
+    Array.from(users.entries()).map(([key, info], idx) => {
+      const suffix = labelCounts[info.label] > 1 && info.token ? `（${shortUserToken(info.token)}）` : '';
+      return `<option value="${escapeHtml(key)}">博主${idx + 1}：${escapeHtml(info.label + suffix)}</option>`;
+    }
+    ).join('');
+  if (users.has(current)) select.value = current;
 }
 
 function renderStat() {
@@ -304,10 +342,12 @@ function renderStat() {
 
 function applyFilter() {
   const q = document.getElementById('q').value.trim().toLowerCase();
+  const user = document.getElementById('user-filter').value;
   const type = document.getElementById('type-filter').value;
   const sort = document.getElementById('sort').value;
 
   FILTERED = ALL.filter(a => {
+    if (user && getUserKey(a) !== user) return false;
     if (type && (a.type_cn || '未知') !== type) return false;
     if (q) {
       const hay = ((a.title || '') + ' ' + (a.content || '') + ' ' + (a.abstract || '')).toLowerCase();
@@ -353,6 +393,7 @@ function render() {
     const title = a.title || '(无标题)';
     const content = a.content || a.inline_content || a.abstract || '';
     const preview = content.slice(0, 200);
+    const userLabel = formatUserLabel(a);
 
     return `
       <div class="card" data-idx="${start + i}">
@@ -361,6 +402,7 @@ function render() {
           <h3>${hl(title)}</h3>
         </div>
         <div class="meta">
+          <span>👤 ${escapeHtml(userLabel)}</span>
           <span>🕐 ${a.publish_time || '-'}</span>
           ${a.comment_count ? `<span>💬 ${a.comment_count}</span>` : ''}
           ${a.url ? `<a href="${a.url}" target="_blank" rel="noopener" onclick="event.stopPropagation()">🔗 原文</a>` : ''}
@@ -415,6 +457,7 @@ document.getElementById('q').addEventListener('input', () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(applyFilter, 200);
 });
+document.getElementById('user-filter').addEventListener('change', applyFilter);
 document.getElementById('type-filter').addEventListener('change', applyFilter);
 document.getElementById('sort').addEventListener('change', applyFilter);
 
@@ -422,6 +465,8 @@ loadData();
 
 // ---------- 同步功能 ----------
 let syncPolling = null;
+let syncPollStartTime = null;
+const SYNC_TIMEOUT_MINUTES = 10; // 轮询超时时间（分钟）
 
 function showToast(message, type = 'info') {
   const container = document.getElementById('toast-container');
@@ -431,6 +476,17 @@ function showToast(message, type = 'info') {
   container.appendChild(toast);
   // 动画结束后移除
   setTimeout(() => toast.remove(), 4500);
+}
+
+function resetSyncButton() {
+  if (syncPolling) {
+    clearInterval(syncPolling);
+    syncPolling = null;
+  }
+  syncPollStartTime = null;
+  const btn = document.getElementById('sync-btn');
+  btn.disabled = false;
+  btn.innerHTML = '🔄 同步抓取';
 }
 
 async function triggerSync() {
@@ -445,18 +501,23 @@ async function triggerSync() {
     const resp = await fetch('api/sync', { method: 'POST' });
     const data = await resp.json();
     if (!data.ok) {
+      if (data.message && data.message.includes('正在进行中')) {
+        // 同步已经在进行中，直接开始轮询
+        status.textContent = '⏳ 同步正在进行中...';
+        syncPollStartTime = Date.now();
+        syncPolling = setInterval(checkSyncStatus, 3000);
+        return;
+      }
       showToast(data.message, 'error');
-      btn.disabled = false;
-      btn.innerHTML = '🔄 同步抓取';
+      resetSyncButton();
       return;
     }
     status.textContent = '⏳ 同步已启动，正在后台抓取...';
-    // 轮询状态
+    syncPollStartTime = Date.now();
     syncPolling = setInterval(checkSyncStatus, 3000);
   } catch (e) {
     showToast('请求失败：' + e.message + '（请确认使用 view.sh 启动服务）', 'error');
-    btn.disabled = false;
-    btn.innerHTML = '🔄 同步抓取';
+    resetSyncButton();
   }
 }
 
@@ -464,14 +525,24 @@ async function checkSyncStatus() {
   try {
     const resp = await fetch('api/sync/status');
     const data = await resp.json();
-    const btn = document.getElementById('sync-btn');
     const status = document.getElementById('sync-status');
 
+    // 超时检查
+    if (syncPollStartTime) {
+      const elapsed = (Date.now() - syncPollStartTime) / 1000 / 60;
+      if (elapsed > SYNC_TIMEOUT_MINUTES) {
+        showToast(`⚠️ 同步超过 ${SYNC_TIMEOUT_MINUTES} 分钟仍未完成，已自动取消轮询（爬虫可能卡住）`, 'error');
+        status.className = 'sync-status error';
+        status.textContent = `同步超时（>${SYNC_TIMEOUT_MINUTES}分钟），后台爬虫可能卡住，请检查控制台或重启服务`;
+        resetSyncButton();
+        return;
+      }
+      status.textContent = `⏳ 同步中...（已运行 ${Math.round(elapsed)} 分钟）`;
+    }
+
     if (!data.running) {
-      clearInterval(syncPolling);
-      syncPolling = null;
-      btn.disabled = false;
-      btn.innerHTML = '🔄 同步抓取';
+      resetSyncButton();
+      status.className = '';
       status.textContent = '';
 
       if (data.last_exit_code === 0) {
@@ -481,7 +552,6 @@ async function checkSyncStatus() {
         } else {
           showToast('✅ 同步完成，暂无新文章', 'info');
         }
-        // 重新加载数据
         loadData();
       } else {
         showToast('❌ 同步失败：' + (data.error || '未知错误'), 'error');
@@ -503,6 +573,7 @@ async function checkSyncStatus() {
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span> 同步中...';
       status.textContent = '⏳ 同步进行中（' + data.last_start + ' 启动）...';
+      syncPollStartTime = Date.now();
       syncPolling = setInterval(checkSyncStatus, 3000);
     }
   } catch (e) { /* 静态服务模式，忽略 */ }

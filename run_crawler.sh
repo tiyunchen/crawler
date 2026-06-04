@@ -2,7 +2,7 @@
 # 定时任务包装脚本：切到项目目录 + 用 .venv 的 python + 开启无头模式 + 按天切分日志
 # 被 launchd/cron 调用
 
-PROJECT_DIR="/Users/cty/Documents/pythonStuty/browser-use"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="$PROJECT_DIR/.venv/bin/python"
 SCRIPT="$PROJECT_DIR/toutiao_crawler.py"
 

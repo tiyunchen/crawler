@@ -7,6 +7,7 @@
 """
 
 import http.server
+import errno
 import json
 import os
 import subprocess
@@ -16,6 +17,7 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).parent
 PORT = int(os.environ.get("PORT", 8082))
+CRAWLER_TIMEOUT = int(os.environ.get("CRAWLER_TIMEOUT", 600))  # 爬虫超时秒数，默认 10 分钟
 
 # ---------- 同步状态 ----------
 sync_state = {
@@ -61,7 +63,12 @@ def run_crawler():
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
-        proc.wait()
+        try:
+            proc.wait(timeout=CRAWLER_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            raise TimeoutError(f"爬虫运行超过 {CRAWLER_TIMEOUT} 秒，已强制终止")
 
         # 计算新增文章数
         count_after = _count_articles()
@@ -73,6 +80,13 @@ def run_crawler():
             sync_state["last_exit_code"] = proc.returncode
             sync_state["new_count"] = new_count
             sync_state["error"] = None if proc.returncode == 0 else f"exit code {proc.returncode}"
+    except TimeoutError as e:
+        with sync_lock:
+            sync_state["running"] = False
+            sync_state["last_end"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            sync_state["last_exit_code"] = -1
+            sync_state["new_count"] = max(0, _count_articles() - count_before)
+            sync_state["error"] = str(e)
     except Exception as e:
         with sync_lock:
             sync_state["running"] = False
@@ -136,7 +150,20 @@ if __name__ == "__main__":
     print(f"🌐 服务已启动：http://localhost:{PORT}/viewer.html")
     print(f"🔄 同步接口：POST http://localhost:{PORT}/api/sync")
     print("🛑 停止服务：Ctrl+C")
-    server = http.server.HTTPServer(("", PORT), Handler)
+    try:
+        server = http.server.HTTPServer(("", PORT), Handler)
+    except OSError as e:
+        # 端口占用时给出可操作提示，避免用户只看到 Python traceback。
+        if e.errno in (errno.EADDRINUSE, 48, 98):
+            print(f"❌ 端口 {PORT} 已被占用。")
+            print(f"   如果是本项目服务已在运行，直接访问：http://localhost:{PORT}/viewer.html")
+            print(f"   如果想换端口启动：PORT=8083 .venv/bin/python server.py")
+            raise SystemExit(1)
+        if e.errno in (errno.EPERM, 1):
+            print(f"❌ 无法绑定端口 {PORT}，当前环境不允许启动本地监听服务。")
+            print(f"   可以换端口试试：PORT=8083 .venv/bin/python server.py")
+            raise SystemExit(1)
+        raise
     try:
         server.serve_forever()
     except KeyboardInterrupt:

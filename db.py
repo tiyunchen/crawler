@@ -14,6 +14,7 @@ import json
 import os
 import re
 from typing import Any
+from urllib.parse import unquote
 
 from dotenv import load_dotenv
 
@@ -25,7 +26,8 @@ DB_TABLE = os.getenv("DB_TABLE", "toutiao_articles").strip() or "toutiao_article
 SCHEMA_SQL = f"""
 CREATE TABLE IF NOT EXISTS {DB_TABLE} (
     group_id      VARCHAR(64) PRIMARY KEY,
-    user_token    VARCHAR(128),
+    user_token    TEXT,
+    user_name     TEXT,
     type          VARCHAR(32),
     type_cn       VARCHAR(16),
     title         TEXT,
@@ -45,16 +47,20 @@ CREATE TABLE IF NOT EXISTS {DB_TABLE} (
 CREATE INDEX IF NOT EXISTS idx_{DB_TABLE}_publish_time ON {DB_TABLE}(publish_time DESC);
 CREATE INDEX IF NOT EXISTS idx_{DB_TABLE}_type         ON {DB_TABLE}(type);
 CREATE INDEX IF NOT EXISTS idx_{DB_TABLE}_user_token   ON {DB_TABLE}(user_token);
+-- 多博主 token 可能超过 128 字符；已存在的旧表也同步放宽字段长度。
+ALTER TABLE {DB_TABLE} ALTER COLUMN user_token TYPE TEXT;
+ALTER TABLE {DB_TABLE} ADD COLUMN IF NOT EXISTS user_name TEXT;
 """
 
 UPSERT_SQL = f"""
 INSERT INTO {DB_TABLE} (
-    group_id, user_token, type, type_cn, title, url, publish_time,
+    group_id, user_token, user_name, type, type_cn, title, url, publish_time,
     abstract, source, content, comment_count, digg_count,
     has_video, video_id, raw, updated_at
 ) VALUES %s
 ON CONFLICT (group_id) DO UPDATE SET
     user_token    = EXCLUDED.user_token,
+    user_name     = EXCLUDED.user_name,
     type          = EXCLUDED.type,
     type_cn       = EXCLUDED.type_cn,
     title         = EXCLUDED.title,
@@ -78,8 +84,8 @@ ON CONFLICT (group_id) DO UPDATE SET
 
 def _extract_user_token(url: str) -> str:
     """从博主主页 URL 提取 user_token"""
-    m = re.search(r"/token/([A-Za-z0-9_\-]+)", url or "")
-    return m.group(1) if m else ""
+    m = re.search(r"/token/([^/?#]+)", url or "")
+    return unquote(m.group(1)) if m else ""
 
 
 def _to_row(art: dict, user_token: str) -> tuple:
@@ -90,7 +96,8 @@ def _to_row(art: dict, user_token: str) -> tuple:
         pub = None
     return (
         str(art.get("group_id") or ""),
-        user_token,
+        art.get("user_token") or user_token,
+        art.get("user_name") or "",
         art.get("type") or "",
         art.get("type_cn") or "",
         art.get("title") or "",
@@ -144,9 +151,7 @@ def save_to_db(articles: list[dict], user_url: str = "") -> bool:
                 cur.execute(SCHEMA_SQL)
                 # 批量 upsert（每批 500 条，避免一次性 SQL 过长）
                 # 注意：execute_values 的 template 必须和 INSERT 的列数匹配
-                template = (
-                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW())"
-                )
+                template = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, NOW())"
                 execute_values(cur, UPSERT_SQL, rows, template=template, page_size=500)
         print(f"🗄️  PostgreSQL 入库成功：{len(rows)} 条 → {DB_TABLE}")
         return True
